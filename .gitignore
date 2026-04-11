@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environments
+.env
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+dist.rar
+*.rar
+
+# IDE
+.vscode/
+.idea/
+
+# Logs and local runs
+*.log
+lightning_logs/
+.ipynb_checkpoints/
+
+# Local experiment outputs
+*.tmp
+
+# Sample data kept outside git by default
+*.edf
+
+# Model checkpoints and large binary assets stay local
+*.ckpt
+*.pth
+*.safetensors

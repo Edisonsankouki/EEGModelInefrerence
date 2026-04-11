@@ -1,0 +1,114 @@
+gpt2ref 今日代码操作与打包说明
+日期：2026-03-01
+目录：C:\Users\jiang\Downloads\gpt2ref\gpt2ref
+
+==================================================
+1) 今天做了哪些代码改动
+==================================================
+
+[改动1] comcode.py：改为“按需导入”
+- 之前：程序启动时一次性导入所有模型模块（detspike/seizure/sleep/report/ICA/CBA等）。
+- 风险：即使只跑 Report_generation，也可能被其它模型依赖缺失拖挂，导致 exe 启动失败。
+- 现在：根据 model 参数进入分支后再 import 对应模块，降低耦合。
+- 额外支持：
+  - model 不区分大小写（统一 lower）
+  - Report_generation 兼容别名 report
+
+[改动2] report.py：固定 matplotlib 后端为 Agg
+- 新增：
+  import matplotlib
+  matplotlib.use("Agg")
+- 目的：避免打包后在无图形界面环境下因 GUI backend 导致报错。
+
+[改动3] exe.spec：替换为更稳健的 PyInstaller 配置
+- 收集本地资源目录：
+  - model
+  - fine_tuning
+- 增强收集：
+  - datas：torch/torchvision/numpy/pandas/mne/matplotlib/transformers/timm/rich/tokenizers/safetensors/huggingface_hub/yaml/tzdata
+  - binaries：torch/torchvision/numpy/scipy/pandas/matplotlib/PyQt5
+  - hiddenimports：lightning 依赖链、transformers/mne/timm 等 + 若干兜底模块
+  - metadata：setuptools/packaging/pytorch-lightning/lightning-fabric/lightning-utilities 等
+- 关闭 upx（upx=False），减少压缩导致的运行时异常。
+
+[改动4] 新增 build_exe_venv.bat
+- 作用：强制使用项目内 .venv 打包，避免系统 Python 污染。
+- 流程：
+  1. 检查 .venv\Scripts\python.exe 是否存在
+  2. 清理旧的 build\exe 与 dist\gpt2ref
+  3. 执行 .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean exe.spec
+
+[改动5] README.md：补充打包与验证步骤
+- 增加了 Windows 下 .venv 打包和 Report_generation 验证命令。
+
+==================================================
+2) 你遇到的问题与正确执行方式
+==================================================
+
+你在 PowerShell 里执行 bat 报 “无法识别命令”，主要是路径不对：
+- 你当时在：dist\gpt2ref
+- 但 build_exe_venv.bat 在项目根目录：gpt2ref\gpt2ref
+
+正确做法（推荐）：
+1. 先进入项目根目录
+   cd C:\Users\jiang\Downloads\gpt2ref\gpt2ref
+2. 再运行
+   .\build_exe_venv.bat
+
+也可以直接绝对路径执行：
+& "C:\Users\jiang\Downloads\gpt2ref\gpt2ref\build_exe_venv.bat"
+
+==================================================
+3) 标准打包教程（可直接复制）
+==================================================
+
+[步骤A] 进入项目根目录
+cd C:\Users\jiang\Downloads\gpt2ref\gpt2ref
+
+[步骤B] 一键打包（使用 .venv）
+.\build_exe_venv.bat
+
+[步骤C] 手动等价命令（可选）
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean exe.spec
+
+[步骤D] 产物位置
+dist\gpt2ref\gpt2ref.exe
+
+[步骤E] 验证 Report_generation
+.\dist\gpt2ref\gpt2ref.exe Report_generation .\20370.edf
+
+[路径有空格时]
+.\dist\gpt2ref\gpt2ref.exe Report_generation "C:\path with space\xxx.edf"
+
+==================================================
+4) 常见问题快速排查
+==================================================
+
+Q1: 找不到 build_exe_venv.bat
+A1: 先执行 pwd/dir 确认当前目录是否在 gpt2ref\gpt2ref 根目录。
+
+Q2: .venv\Scripts\python.exe not found
+A2: 说明虚拟环境不在当前项目目录，需先确认 .venv 是否存在于项目根。
+
+Q3: exe 运行报错
+A3: 把控制台最后 30 行完整输出贴出来，重点看：
+    - Missing module
+    - FileNotFoundError
+    - DLL load failed
+    - 通道不匹配
+
+==================================================
+5) 本次变更文件清单
+==================================================
+
+- comcode.py
+- report.py
+- exe.spec
+- build_exe_venv.bat（新增）
+- README.md
+
+（说明完）
+
+
+
+codex resume 019d19ed-ba19-7e63-9dce-23e7f2b1b42b

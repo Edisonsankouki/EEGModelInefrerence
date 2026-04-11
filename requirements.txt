@@ -1,0 +1,11 @@
+torch
+numpy
+pytorch_lightning==1.9.5  
+mne
+scipy
+pickle
+transformers
+math
+csv
+os
+pandas
