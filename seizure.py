@@ -14,13 +14,69 @@ from model import (
 import mne
 import pandas as pd
 import sys
+def edf_eeg(file_path):
+    # 读取原始数据并获取采样率
+    raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False, encoding='latin1')
+    sfreq = 200
+
+    # 定义需要提取的通道名称的关键字
+    keywords = ['Fp1', 'F7', 'Fp2', 'F8', 'O2', 'C3', 'F3', 'P3', 'P4', 'C4', 'T3', 'T5', 'T4', 'T6', 'O1','F4']
+    # 获取EDF文件中的所有通道名称
+    all_channel_names = raw.ch_names
+    
+    # 找到包含关键字的通道
+    # selected_channels = [ch for ch in all_channel_names if any(keyword in ch for keyword in keywords)]
+    selected_channels = [ch for ch in all_channel_names if any(keyword.lower() in ch.lower() for keyword in keywords)]
+
+    
+    # 提取指定的通道
+    raw.pick_channels(selected_channels)
+    
+    # 重采样数据
+    raw.resample(sfreq=sfreq, npad='auto', n_jobs=1)
+    
+    # 获取通道名称和数据
+    raw_data = raw.get_data()
+
+    # 创建映射字典以便于索引
+    ch_name_to_index = {name: idx for idx, name in enumerate(raw.ch_names)}
+    
+    # 动态获取索引
+    def get_channel_index(keyword):
+        for ch_name in ch_name_to_index:
+            if keyword in ch_name:
+                return ch_name_to_index[ch_name]
+        raise ValueError(f"Channel with keyword '{keyword}' not found.")
+
+
+    channeled_data = raw_data.copy()[:16]
+    channeled_data[0] = raw_data[get_channel_index("Fp1")]- raw_data[get_channel_index("F7")]
+    channeled_data[1] = raw_data[get_channel_index("F7")]- raw_data[get_channel_index("T3")]
+    channeled_data[2] = raw_data[get_channel_index("T3")]- raw_data[get_channel_index("T5")]
+    channeled_data[3] = raw_data[get_channel_index("T5")]- raw_data[get_channel_index("O1")]
+    channeled_data[4] = raw_data[get_channel_index("Fp2")]- raw_data[get_channel_index("F8")]
+    channeled_data[5] = raw_data[get_channel_index("F8")]- raw_data[get_channel_index("T4")]
+    channeled_data[6] = raw_data[get_channel_index("T4")]- raw_data[get_channel_index("T6")]
+    channeled_data[7] = raw_data[get_channel_index("T6")]- raw_data[get_channel_index("O2")]
+    channeled_data[8] = raw_data[get_channel_index("Fp1")]- raw_data[get_channel_index("F3")]
+    channeled_data[9] = raw_data[get_channel_index("F3")]- raw_data[get_channel_index("C3")]
+    channeled_data[10] = raw_data[get_channel_index("C3")]- raw_data[get_channel_index("P3")]
+    channeled_data[11] = raw_data[get_channel_index("P3")]- raw_data[get_channel_index("O1")]
+    channeled_data[12] = raw_data[get_channel_index("Fp2")]- raw_data[get_channel_index("F4")]
+    channeled_data[13] = raw_data[get_channel_index("F4")]- raw_data[get_channel_index("C4")]
+    channeled_data[14] = raw_data[get_channel_index("C4")]- raw_data[get_channel_index("P4")]
+    channeled_data[15] = raw_data[get_channel_index("P4")]- raw_data[get_channel_index("O2")]
+    
+    return channeled_data
+
 
 
 class LitModel_finetune(pl.LightningModule):
     def __init__(self, model):
         super().__init__()
         self.model = model
-        self.threshold = 0.4153
+        self.threshold = 0.4153   # 4153 3144
+
 
     def test_step(self, batch, batch_idx):
         X = batch
@@ -30,204 +86,49 @@ class LitModel_finetune(pl.LightningModule):
         return step_result
 
     def test_epoch_end(self, test_step_outputs):
-        import numpy as np
         result = np.array([])
 
         for out in test_step_outputs:
             result = np.append(result, out[0])
+            # self.log("result", float(result), sync_dist=True)
 
-        if len(result) != 0:
+        if (
+             len(result)!=0
+        ):  # to prevent all 0 or all 1 and raise the AUROC error
+            # print(result)
             y_pred = result.copy()
             y_pred[y_pred >= self.threshold] = 1
-            y_pred[y_pred <  self.threshold] = 0
+            y_pred[y_pred < self.threshold] = 0
+            # print(y_pred)
             self.log("检测结果", int(y_pred.copy()), sync_dist=True)
+
             return y_pred
-class ChannelMismatchError(Exception):
-    """用于在通道不匹配时携带详细原因。"""
-    def __init__(self, msg, details=None):
-        super().__init__(msg)
-        self.details = details or {}
 
-def brace_print_dict(d):
-    """花括号打印（非 JSON），支持 dict/列表/字符串。"""
-    print("{")
-    for k, v in d.items():
-        if isinstance(v, (list, tuple)):
-            vs = ", ".join([str(x) for x in v]) if v else ""
-            print(f"  {k}: [{vs}]")
-        elif isinstance(v, dict):
-            print(f"  {k}:")
-            for k2, v2 in v.items():
-                print(f"    {k2}: {v2}")
-        else:
-            print(f"  {k}: {v}")
-    print("}")
 
-def edf_eeg(file_path):
-    """
-    读取 EDF，校验/映射通道，若缺失则抛出 ChannelMismatchError，错误中包含详细原因。
-    返回 shape=(16, T) 的双极导联数据。
-    """
-    try:
-        raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False, encoding='latin1')
-    except Exception as e:
-        raise ChannelMismatchError("EDF文件读取失败", {"exception": repr(e)})
-
-    sfreq = 200
-
-    # 需要构建的 16 个双极导联（以“关键字”表示，大小写不敏感，支持别名）
-    bipolar_pairs = [
-        ("Fp1","F7"), ("F7","T3"), ("T3","T5"), ("T5","O1"),
-        ("Fp2","F8"), ("F8","T4"), ("T4","T6"), ("T6","O2"),
-        ("Fp1","F3"), ("F3","C3"), ("C3","P3"), ("P3","O1"),
-        ("Fp2","F4"), ("F4","C4"), ("C4","P4"), ("P4","O2"),
-    ]
-
-    # 别名表（常见命名差异）：T3/T4/T5/T6 <-> T7/T8/P7/P8，O1/O2 常写作 O1-REF 等
-    ALIASES = {
-        "T3": ["T3", "T7"],
-        "T4": ["T4", "T8"],
-        "T5": ["T5", "P7"],
-        "T6": ["T6", "P8"],
-        "Fp1": ["Fp1", "FP1"],
-        "Fp2": ["Fp2", "FP2"],
-        "F3": ["F3"], "F4": ["F4"], "F7": ["F7"], "F8":["F8"],
-        "C3": ["C3"], "C4": ["C4"],
-        "P3": ["P3"], "P4": ["P4"],
-        "O1": ["O1"], "O2": ["O2"],
-    }
-
-    # 原始通道名
-    all_chs = raw.ch_names
-    all_chs_lower = [c.lower() for c in all_chs]
-
-    def find_best_match(keyword):
-        """
-        在原始通道中寻找包含某 keyword 或其别名的通道。
-        优先匹配包含 '-REF' 或 ' -REF' 的名称；如有多个候选，返回第一个并记录歧义。
-        返回: (matched_name, candidates_list)
-        若找不到，返回 (None, [])
-        """
-        candidates = []
-        for alias in ALIASES.get(keyword, [keyword]):
-            al = alias.lower()
-            hits = [c for c in all_chs if al in c.lower()]
-            candidates.extend(hits)
-
-        # 去重
-        candidates = list(dict.fromkeys(candidates))
-
-        if not candidates:
-            return None, []
-
-        # 优先含有 -REF / REF 结尾的名称
-        def score(name):
-            n = name.lower()
-            s = 0
-            if "-ref" in n or n.endswith(" ref") or n.endswith("- ref"):
-                s += 2
-            # 次优先：完全词边界命中
-            # 这里只做简单启发：如果 alias 大写形式作为独立子串出现，加 1 分
-            for alias in ALIASES.get(keyword, [keyword]):
-                if alias in name or alias.upper() in name:
-                    s += 1
-                    break
-            return -s  # sort ascending, so use negative
-
-        candidates_sorted = sorted(candidates, key=score)
-        return candidates_sorted[0], candidates_sorted
-
-    # 为每个原始“关键位”确定一个实际通道
-    chosen_map = {}          # 例如 {"Fp1": "EEG FP1-REF", ...}
-    missing_keywords = []    # 完全找不到的关键字
-    ambiguous = {}           # 歧义匹配: {"F7": ["EEG F7-REF","F7-A1",...]}
-
-    for kw in sorted({k for pair in bipolar_pairs for k in pair}):
-        match, cand = find_best_match(kw)
-        if match is None:
-            missing_keywords.append(kw)
-        else:
-            chosen_map[kw] = match
-            if len(cand) > 1:
-                ambiguous[kw] = cand[:6]  # 最多展示前6个候选，避免过长
-
-    # 如果有缺失，直接报错并给出细节
-    if missing_keywords:
-        raise ChannelMismatchError(
-            "通道不匹配：缺少构建双极导联所需的原始通道",
-            details={
-                "缺失关键通道": missing_keywords,
-                "文件包含通道数": len(all_chs),
-                "文件示例通道": all_chs[:20],
-                "提示": "支持大小写不敏感与常见别名(T3↔T7, T4↔T8, T5↔P7, T6↔P8)。请检查医院导出命名或改用别名。",
-            }
-        )
-
-    # 进一步检查：哪几个双极对无法构造（因为某一侧虽然找到，但另一侧找不到或重复名）
-    unbuildable = []
-    for a, b in bipolar_pairs:
-        if a not in chosen_map or b not in chosen_map:
-            unbuildable.append(f"{a}-{b}")
-
-    if unbuildable:
-        raise ChannelMismatchError(
-            "通道不匹配：部分双极导联无法构造",
-            details={
-                "无法构造的导联": unbuildable,
-                "已匹配映射": chosen_map,
-                "歧义匹配": ambiguous if ambiguous else "无",
-            }
-        )
-
-    # 选通道并重采样
-    unique_chs = list(set(chosen_map.values()))
-    raw.pick_channels(unique_chs)
-    raw.resample(sfreq=sfreq, npad='auto', n_jobs=1)
-
-    data = raw.get_data()
-    idx_map = {name: i for i, name in enumerate(raw.ch_names)}
-
-    def chdata(keyword):
-        return data[idx_map[chosen_map[keyword]]]
-
-    # 构建 16 导双极数据
-    channeled_data = data.copy()[:16]
-    pairs = bipolar_pairs  # 简写
-    for i, (a, b) in enumerate(pairs):
-        channeled_data[i] = chdata(a) - chdata(b)
-
-    return channeled_data
 
 def supervised(file_path):
     try:
         X = edf_eeg(file_path)
-    except ChannelMismatchError as e:
-        # 结构化打印详细原因
-        info = {"错误": "通道不匹配", "原因": str(e)}
-        if getattr(e, "details", None):
-            info.update(e.details)
-        brace_print_dict(info)
-        sys.exit(1)
     except Exception as e:
-        brace_print_dict({"错误": "未知异常", "exception": repr(e)})
-        sys.exit(1)
-
-    # ====== 下面保持你的原逻辑不变 ======
-    import numpy as np
-    import torch
-    from pytorch_lightning.strategies import SingleDeviceStrategy
-    from model import gpt4ts
-
+        print("{通道不匹配，缺乏所需通道}")
+        sys.exit(1)  # 终止程序运行，返回错误码1
+    # X = file_path
     ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fine_tuning', 'seizure.ckpt')
 
     mean = np.mean(X, axis=-1, keepdims=True)
     std = np.std(X, axis=-1, keepdims=True)
     std = np.maximum(std, 1e-8)
     X = (X - mean) / std
-    X = torch.FloatTensor(X).unsqueeze(0).unsqueeze(0)
+    X = torch.FloatTensor(X)
+    X = X.unsqueeze(0)  
+    X = X.unsqueeze(0)  
+    # print("输入：",X.shape)
 
     model = gpt4ts(1)
+    # model = labram_base_patch200_200()
+
     lightning_model = LitModel_finetune(model)
+
 
     trainer = pl.Trainer(
         devices='auto',
@@ -238,6 +139,62 @@ def supervised(file_path):
         enable_checkpointing=True,
     )
 
-    pretrain_result = trainer.test(model=lightning_model, ckpt_path=ckpt_path, dataloaders=X)[0]
+
+    # test the model
+    pretrain_result = trainer.test(
+        model=lightning_model, ckpt_path=ckpt_path, dataloaders= X
+    )[0]
     print(pretrain_result)
     return pretrain_result
+if __name__ == "__main__":
+
+    # # 替换为.edf文件路径  
+    # file_path = "20370.edf"
+    # # X=edf_eeg(file_path)
+    # supervised(file_path)
+    def batch_test(file_dir):
+        result_dict = {}
+        for root, dirs, files in os.walk(file_dir):
+            for file in files:
+                if file.endswith('.edf'):
+                    file_path = os.path.join(root, file)
+                    # 提取.edf 前的数字作为键
+                    key = file.split('.')[0]
+                    # X = edf_eeg(file_path)
+                    pretrain_result = supervised(file_path)
+                    result_dict[key] = pretrain_result['检测结果']
+        return result_dict
+
+    # # 示例用法
+    # path=r"D:\EEG数据集\test\edf2\da001ubk.edf"
+
+    # file_path = "D:\EEG数据集\四川省人民医院数据\脑电图分析"
+    file_path=r"C:\Users\Administrator\Desktop\临床bench\normal"
+
+    result = batch_test(file_path)
+    print(result)
+
+    # 将结果续写到CSV文件
+    import csv
+    import os
+
+    def append_to_csv(result, csv_file="results_normal.csv"):
+        """
+        将键值对结果续写到CSV文件
+        """
+        file_exists = os.path.exists(csv_file)
+        
+        with open(csv_file, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # 如果文件不存在，写入表头
+            if not file_exists:
+                writer.writerow(["键", "值"])
+            
+            # 将键值对写入CSV
+            for key, value in result.items():
+                writer.writerow([key, value])
+        
+        print(f"数据已成功续写到 {csv_file}")
+
+    append_to_csv(result)

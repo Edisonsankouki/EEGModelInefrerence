@@ -627,43 +627,45 @@ def _score_stability(line_ratio, emg_ratio, regulation_ok):
 def _score_flex(spec_ent, rel_alpha):
     """
     spec_ent 过低可能提示节律单一/伪迹/僵化；此处做保守代理映射
+    （已校准v2：评分上限控制在正常范围，与eeg_batch_analysis一致）
     """
     if spec_ent is None or np.isnan(spec_ent) or np.isinf(spec_ent):
         return None
     se = float(spec_ent)
-    # 参考：>=4.5 较好；4.0~4.5 轻度；3.5~4.0 中等；<3.5 风险高
+    # 校准v2：整体下移约13分，最大82+3=85
     if se >= 4.5:
-        score = 55.0
+        score = 42.0
     elif se >= 4.0:
-        score = _linear_map(se, 4.0, 4.5, 70.0, 55.0)
+        score = _linear_map(se, 4.0, 4.5, 55.0, 42.0)
     elif se >= 3.5:
-        score = _linear_map(se, 3.5, 4.0, 85.0, 70.0)
+        score = _linear_map(se, 3.5, 4.0, 72.0, 55.0)
     else:
-        score = 95.0
+        score = 82.0
 
-    # alpha 占比极端也加一点风险（避免强节律/伪迹误判）
+    # alpha 占比极端也加一点风险（减弱：10→3）
     if rel_alpha is not None:
         ra = float(rel_alpha)
         if ra < 0.05 or ra > 0.40:
-            score += 10.0
+            score += 3.0
     return clamp_score(score)
 
 def _score_reaction(beta_alpha_ratio):
     """
     静息 EEG 无法直接测反应时；用 beta/alpha 做保守代理，默认中性
+    （已校准v2：评分上限控制在正常范围，与eeg_batch_analysis一致）
     """
     if beta_alpha_ratio is None or np.isnan(beta_alpha_ratio) or np.isinf(beta_alpha_ratio):
         return None
     bar = float(beta_alpha_ratio)
-    score = 60.0
+    score = 55.0
     if bar > 2.0:
-        score += 25.0
-    elif bar > 1.6:
-        score += 15.0
-    elif bar < 0.4:
         score += 20.0
-    elif bar < 0.6:
+    elif bar > 1.6:
         score += 10.0
+    elif bar < 0.4:
+        score += 15.0
+    elif bar < 0.6:
+        score += 7.0
     return clamp_score(score)
 
 def _score_arousal(beta_alpha_ratio, faa_abs):
@@ -897,7 +899,7 @@ def compute_functional_results(raw, window_data, sfreq, pair_results=None, reg_d
         + ((flex_score - 50.0) * 0.15 if flex_score is not None else 0.0)
     )
 
-    fear_score = clamp_score(base_psy + (arousal_score - 50.0) * 0.45)
+    fear_score = clamp_score(40.0 + (arousal_score - 50.0) * 0.28)  # 校准v2：基础分45→40，系数0.45→0.28
     irritability_score = clamp_score(
         base_psy
         + (arousal_score - 50.0) * 0.45
@@ -920,23 +922,24 @@ def compute_functional_results(raw, window_data, sfreq, pair_results=None, reg_d
     # 脑耗氧/血氧代谢/活力（EEG代理口径）
     # 这里保持保守：不做“诊断式”分布；用疲劳与噪声轻度驱动
     oxygen_score = clamp_score(55.0 + (0.3 * (fatigue_score - 50.0) if fatigue_score is not None else 0.0) + (0.2 * ((anti_interf_score or 55.0) - 55.0)))
-    spo2_score   = clamp_score(55.0 + (0.2 * (fatigue_score - 50.0) if fatigue_score is not None else 0.0) + (0.2 * ((anti_interf_score or 55.0) - 55.0)))
+    spo2_score   = clamp_score(45.0 + (0.15 * (fatigue_score - 50.0) if fatigue_score is not None else 0.0) + (0.12 * ((anti_interf_score or 55.0) - 55.0)))  # 校准v2：基础55→45，系数0.2→0.15/0.12
 
     # 活力：rel_beta 过低更差（风险分更高），过高不做过度推断
     vitality_score = None
     if rel_beta is not None and np.isfinite(rel_beta):
         rb = float(rel_beta)
+        # 校准v2：整体下移约16分，最大62+2=64
         if rb < 0.10:
-            vitality_score = 78.0
+            vitality_score = 62.0
         elif rb < 0.14:
-            vitality_score = _linear_map(rb, 0.10, 0.14, 78.0, 65.0)
+            vitality_score = _linear_map(rb, 0.10, 0.14, 62.0, 52.0)
         elif rb < 0.22:
-            vitality_score = _linear_map(rb, 0.14, 0.22, 65.0, 55.0)
+            vitality_score = _linear_map(rb, 0.14, 0.22, 52.0, 45.0)
         else:
-            vitality_score = 55.0
-        # 疲劳高时略上调
+            vitality_score = 45.0
+        # 疲劳高时略上调（减弱：5→2）
         if fatigue_score is not None and fatigue_score > 85:
-            vitality_score += 5.0
+            vitality_score += 2.0
     vitality_score = clamp_score(vitality_score) if vitality_score is not None else None
 
     # 睡眠质量：用疲劳代理推断（仅两类：正常/较差），但仍输出四级风险分
@@ -1300,6 +1303,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     # 兼容：允许命令行传入 EDF 路径，否则使用默认示例
-    edf_file = sys.argv[1] if len(sys.argv) > 1 else '20370.edf'
+    edf_file = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\Administrator\Desktop\临床bench\数据\包元宵25111310.edf"
     text = Report_generation(edf_file)
     print(text)
